@@ -1,0 +1,31 @@
+<html> 
+    <head>
+        <link rel="stylesheet" href="/style.css">
+    </head>
+    <body>
+        <h1>Wordle 2 Player</h1>
+        <div id="namePage">
+        <input id="name" placeholder="Name">
+        <button onclick="join()">Join</button>
+        </div>
+
+        <div id="lobbyPage" style="display:none;">
+        <h2>Lobby</h2>
+        <p id="lobbyStatus">Waiting for players... (1/2)</p>
+        </div>
+
+        <div id="gamePage" style="display:none;">
+        <h2>Wordle Game</h2>
+        <div id="board"></div>
+
+        <input id="guessInput" maxlength="5" placeholder="Enter guess">
+        <button onclick="submitGuess()">Submit Guess</button>
+
+        <p id="gameStatus"></p>
+        <button id="restartBtn" onclick="restart()" style="display:none;">
+            Restart
+        </button>
+        </div>
+         <script src="/script.js"></script>
+    </body>
+</html>
