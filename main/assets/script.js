@@ -1,5 +1,65 @@
+// ======================= Websocket Code =========================
+
+// Get the ESP32's IP address (it's always 192.168.4.1 for the access point)
+const ws = new WebSocket('ws://192.168.4.1/ws');
+
+ws.onopen = function() {
+    console.log('WebSocket connected!');
+};
+
+ws.onmessage = function(event) {
+    console.log('Received from ESP32:', event.data);
+    
+    try {
+        const data = JSON.parse(event.data);
+        
+        if (data.type === 'result') {
+            console.log('Guess result:', data.word, data.result);
+            
+            // Convert server format (0,1,2) to CSS classes (absent,present,correct)
+            const evalRes = data.result.map(val => {
+                if (val === 2) return 'correct';
+                if (val === 1) return 'present';
+                return 'absent';
+            });
+            
+            // Fill current row with the guess
+            for (let c = 0; c < 5; c++) {
+                boardState[currentRow][c] = data.word[c];
+            }
+            lockedRows[currentRow] = true;
+            
+            renderBoard();
+            applyEvaluationToRow(currentRow, evalRes);
+            
+            // Check for win
+            if (evalRes.every(x => x === 'correct')) {
+                statusEl.innerText = `Nice! You won!`;
+                gameOver = true;
+                restartBtn.style.display = "inline-block";
+            } else {
+                advanceToNextRow();
+            }
+        }
+    } catch (e) {
+        console.log('Plain message:', event.data);
+    }
+};
+
+// Function to send a guess
+function sendGuess(word) {
+    const message = {
+        type: 'guess',
+        word: word.toUpperCase()
+    };
+    ws.send(JSON.stringify(message));
+}
+
+
+
+
 /* ---------- Configuration ---------- */
-const SECRET = "FACTS"; // Word must be 5 letters
+const SECRET = "CRANE" // Word must be 5 letters
 const MAX_ROWS = 5;
 
 /* ---------- Game State ---------- */
@@ -159,32 +219,11 @@ function submitGuess(){
     return;
   }
 
-  // Lock this row
-  lockedRows[currentRow] = true;
-
-  // show guess letters (ensures boardState is filled)
-  for (let c = 0; c < 5; c++) boardState[currentRow][c] = guess[c];
-  renderBoard();
-
-  // Evaluate and color tiles for this row
-  const evalRes = evaluateGuess(guess, SECRET);
-  applyEvaluationToRow(currentRow, evalRes);
-
-  // Check win
-  if (evalRes.every(x => x === 'correct')) {
-    statusEl.innerText = `Nice! ${playerName} solved it!`;
-    gameOver = true;
-    restartBtn.style.display = "inline-block";
-    return;
-  }
-
-  // Simulate second player guessing (so both players guessed this round)
-  statusEl.innerText = `${playerName} submitted. Waiting for other player...`;
-  setTimeout(() => {
-    statusEl.innerText = `Both players guessed! Advancing to next row.`;
-    // move to next row or end if at max
-    advanceToNextRow();
-  }, 900);
+  // Send guess to ESP32
+  sendGuess(guess);
+  
+  statusEl.innerText = "Guess sent, waiting for result...";
+  inputEl.value = "";
 }
 
 /* ---------- Apply coloring to tiles for a row ---------- */
@@ -236,3 +275,6 @@ function restart() {
 /* ---------- Initial render for page load (keeps things tidy) ---------- */
 resetBoardState();
 renderBoard();
+
+
+
