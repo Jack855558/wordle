@@ -16,11 +16,13 @@
 #include "nvs_flash.h"
 #include "esp_http_server.h"
 #include "cJSON.h"
-
+#include "words.h"
 
 
 #include "lwip/err.h"
 #include "lwip/sys.h"
+
+
 
 extern const char html_start[] asm("_binary_index_html_start");
 extern const char html_end[] asm("_binary_index_html_end");
@@ -31,18 +33,24 @@ extern const char css_end[] asm("_binary_style_css_end");
 extern const char js_start[] asm("_binary_script_js_start");
 extern const char js_end[] asm("_binary_script_js_end");
 
-// Game state structure
 typedef struct {
-    int fd;              // File descriptor (WebSocket connection ID)
-    bool connected;      // Is this player connected?
-    char name[32];       // Player name (we can add this later)
+    int fd;
+    bool connected;
+    char name[32];
+    int guesses_used;
+    bool has_won;
+    int score;
+    bool waiting_for_opponent;  //Has the opponent submitted a guess
 } player_t;
 
 typedef struct {
-    player_t players[2];     // Two players
-    int player_count;        // How many players connected
-    bool game_active;        // Is a game currently running?
-    char target_word[6];     // The word to guess (5 letters + null terminator)
+    player_t players[2];
+    int player_count;
+    bool game_active;
+    char target_word[6];
+    int round_number;        // Current round
+    time_t round_start_time; // When the round started (for 45s timer)
+    bool round_over;         // Has this round ended?
 } game_state_t;
 
 // Global game state
@@ -200,6 +208,200 @@ static void check_guess(const char *guess, const char *target, int *result)
     }
 }
 
+// Send a message to a specific player
+static void send_to_player(int player_index, const char *message)
+{
+    if (!game.players[player_index].connected) {
+        return;  // Player not connected
+    }
+    
+    httpd_ws_frame_t ws_pkt;
+    memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
+    ws_pkt.payload = (uint8_t*)message;
+    ws_pkt.len = strlen(message);
+    ws_pkt.type = HTTPD_WS_TYPE_TEXT;
+    
+    // Send the message using the player's file descriptor
+    httpd_ws_send_frame_async(server, game.players[player_index].fd, &ws_pkt);
+    
+    ESP_LOGI(TAG, "Sent to player %d: %s", player_index + 1, message);
+}
+
+// Broadcast a message to all connected players
+static void broadcast_to_all(const char *message)
+{
+    ESP_LOGI(TAG, "Broadcasting: %s", message);
+    for (int i = 0; i < 2; i++) {
+        if (game.players[i].connected) {
+            send_to_player(i, message);
+        }
+    }
+}
+
+// Initialize a new round
+static void start_new_round(void)
+{
+    game.round_number++;
+    game.round_over = false;
+    game.round_start_time = time(NULL);
+    
+    // Reset player states for new round
+    for (int i = 0; i < 2; i++) {
+        if (game.players[i].connected) {
+            game.players[i].guesses_used = 0;
+            game.players[i].has_won = false;
+            game.players[i].waiting_for_opponent = false;  
+        }
+    }
+    
+    // Pick a random word from the list
+    srand(time(NULL) + game.round_number);
+    int random_index = rand() % WORD_LIST_SIZE;
+    strcpy(game.target_word, WORD_LIST[random_index]);
+    
+    ESP_LOGI(TAG, "Round %d started! Target word: %s", game.round_number, game.target_word);
+    
+    // Send round start message to both players
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "type", "round_start");
+    cJSON_AddNumberToObject(msg, "round", game.round_number);
+    cJSON_AddNumberToObject(msg, "time_limit", 45);
+    
+    char *msg_str = cJSON_Print(msg);
+    broadcast_to_all(msg_str);
+    
+    free(msg_str);
+    cJSON_Delete(msg);
+}
+
+// End the current round and determine winner
+static void end_round(void)
+{
+    if (game.round_over) return; // Already ended
+    
+    game.round_over = true;
+    
+    ESP_LOGI(TAG, "Round %d ended!", game.round_number);
+    
+    // Determine winner(s)
+    int winner = -1;  // -1 = tie/no winner, 0 = player 1, 1 = player 2
+    
+    // Check if anyone won
+    bool p1_won = game.players[0].connected && game.players[0].has_won;
+    bool p2_won = game.players[1].connected && game.players[1].has_won;
+    
+    if (p1_won && p2_won) {
+        // Both won - check who used fewer guesses
+        if (game.players[0].guesses_used < game.players[1].guesses_used) {
+            winner = 0;
+            game.players[0].score++;
+        } else if (game.players[1].guesses_used < game.players[0].guesses_used) {
+            winner = 1;
+            game.players[1].score++;
+        } else {
+            winner = -1; // Tie - same number of guesses
+        }
+    } else if (p1_won) {
+        winner = 0;
+        game.players[0].score++;
+    } else if (p2_won) {
+        winner = 1;
+        game.players[1].score++;
+    }
+    
+    // Send round results to both players
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "type", "round_end");
+    cJSON_AddNumberToObject(msg, "winner", winner);
+    cJSON_AddStringToObject(msg, "target_word", game.target_word);
+    cJSON_AddNumberToObject(msg, "player1_score", game.players[0].score);
+    cJSON_AddNumberToObject(msg, "player2_score", game.players[1].score);
+    
+    char *msg_str = cJSON_Print(msg);
+    broadcast_to_all(msg_str);
+    
+    free(msg_str);
+    cJSON_Delete(msg);
+    
+    ESP_LOGI(TAG, "Scores - Player 1: %d, Player 2: %d", 
+             game.players[0].score, game.players[1].score);
+}
+
+
+// Check if 45 seconds have passed since round start
+static bool is_time_up(void)
+{
+    if (!game.game_active || game.round_over) return false;
+    
+    time_t current_time = time(NULL);
+    double elapsed = difftime(current_time, game.round_start_time);
+    
+    return elapsed >= 45.0;
+}
+
+// Task that checks if round time has expired
+// static void timer_check_task(void *pvParameters)
+// {
+//     while (1) {
+//         vTaskDelay(1000 / portTICK_PERIOD_MS);
+        
+//         if (game.game_active && !game.round_over && game.round_start_time > 0) {
+//             time_t current_time = time(NULL);
+//             double elapsed = difftime(current_time, game.round_start_time);
+            
+//             // Check if 45 seconds passed
+//             if (elapsed >= 45.0) {
+//                 ESP_LOGI(TAG, "Guess timer expired!");
+                
+//                 // Force submit for any player who hasn't guessed
+//                 bool anyone_timeout = false;
+//                 for (int i = 0; i < 2; i++) {
+//                     if (game.players[i].connected && 
+//                         !game.players[i].waiting_for_opponent &&
+//                         !game.players[i].has_won) {
+                        
+//                         ESP_LOGI(TAG, "Player %d timed out", i + 1);
+//                         game.players[i].waiting_for_opponent = true;
+//                         anyone_timeout = true;
+                        
+//                         // Notify that player they timed out
+//                         cJSON *timeout_msg = cJSON_CreateObject();
+//                         cJSON_AddStringToObject(timeout_msg, "type", "timeout");
+//                         char *timeout_str = cJSON_Print(timeout_msg);
+//                         send_to_player(i, timeout_str);
+//                         free(timeout_str);
+//                         cJSON_Delete(timeout_msg);
+//                     }
+//                 }
+                
+//                 if (anyone_timeout) {
+//                     // Reset flags and continue
+//                     game.players[0].waiting_for_opponent = false;
+//                     game.players[1].waiting_for_opponent = false;
+                    
+//                     // Check if round should end
+//                     if (game.players[0].guesses_used >= 5 && game.players[1].guesses_used >= 5) {
+//                         end_round();
+//                     } else {
+//                         // Broadcast to continue
+//                         cJSON *continue_msg = cJSON_CreateObject();
+//                         cJSON_AddStringToObject(continue_msg, "type", "both_guessed");
+//                         char *continue_str = cJSON_Print(continue_msg);
+//                         broadcast_to_all(continue_str);
+//                         free(continue_str);
+//                         cJSON_Delete(continue_msg);
+//                     }
+                    
+//                     // Reset timer for next guess
+//                     game.round_start_time = time(NULL);
+//                 }
+//             }
+//         }
+//     }
+// }
+
+
+
 
 
 
@@ -241,63 +443,28 @@ static void remove_player(int fd)
     }
 }
 
-// Send a message to a specific player
-static void send_to_player(int player_index, const char *message)
-{
-    if (!game.players[player_index].connected) {
-        return;  // Player not connected
-    }
-    
-    httpd_ws_frame_t ws_pkt;
-    memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
-    ws_pkt.payload = (uint8_t*)message;
-    ws_pkt.len = strlen(message);
-    ws_pkt.type = HTTPD_WS_TYPE_TEXT;
-    
-    // Send the message using the player's file descriptor
-    httpd_ws_send_frame_async(server, game.players[player_index].fd, &ws_pkt);
-    
-    ESP_LOGI(TAG, "Sent to player %d: %s", player_index + 1, message);
-}
-
-// Broadcast a message to all connected players
-static void broadcast_to_all(const char *message)
-{
-    ESP_LOGI(TAG, "Broadcasting: %s", message);
-    for (int i = 0; i < 2; i++) {
-        if (game.players[i].connected) {
-            send_to_player(i, message);
-        }
-    }
-}
-
 // WebSocket handler - called when WebSocket receives a message
 static esp_err_t ws_handler(httpd_req_t *req)
 {
     if (req->method == HTTP_GET) {
-        // This is the initial WebSocket handshake - NO frame receiving here!
         ESP_LOGI(TAG, "WebSocket handshake done, new connection opened");
         
         int fd = httpd_req_to_sockfd(req);
         int player_index = add_player(fd);
-        
+
         if (player_index == -1) {
             ESP_LOGE(TAG, "Game full! Cannot accept more players");
             return ESP_FAIL;
         }
         
-        // Send welcome message
-        char welcome_msg[100];
-        sprintf(welcome_msg, "Welcome! You are Player %d", player_index + 1);
-        send_to_player(player_index, welcome_msg);
-        
-        // If we now have 2 players, start the game!
-        if (game.player_count == 2) {
-        broadcast_to_all("Game starting! Both players connected!");
-        game.game_active = true;
-        strcpy(game.target_word, "CRANE");  
-        ESP_LOGI(TAG, "Target word set to: %s", game.target_word);  
-        }
+        // Just send welcome message - that's it!
+        cJSON *welcome = cJSON_CreateObject();
+        cJSON_AddStringToObject(welcome, "type", "welcome");
+        cJSON_AddNumberToObject(welcome, "player_index", player_index);
+        char *welcome_str = cJSON_Print(welcome);
+        send_to_player(player_index, welcome_str);
+        free(welcome_str);
+        cJSON_Delete(welcome);
         
         return ESP_OK;
     }
@@ -357,30 +524,182 @@ static esp_err_t ws_handler(httpd_req_t *req)
 
         // Handle different message types
         if (strcmp(msg_type, "guess") == 0) {
-            // Get the guessed word
             cJSON *word_item = cJSON_GetObjectItem(json, "word");
             if (word_item != NULL && cJSON_IsString(word_item)) {
                 const char *guess = word_item->valuestring;
-                ESP_LOGI(TAG, "Player guessed: %s", guess);
                 
-                // Check the guess against target word
+                // Find which player made this guess
+                int fd = httpd_req_to_sockfd(req);
+                int player_index = -1;
+                for (int i = 0; i < 2; i++) {
+                    if (game.players[i].connected && game.players[i].fd == fd) {
+                        player_index = i;
+                        break;
+                    }
+                }
+                
+                if (player_index == -1) {
+                    ESP_LOGE(TAG, "Could not find player for guess");
+                    cJSON_Delete(json);
+                    free(buf);
+                    return ESP_ERR_INVALID_ARG;
+                }
+                
+                // Check if they're already waiting or round is over
+                if (game.players[player_index].waiting_for_opponent) {
+                    ESP_LOGI(TAG, "Player %d already submitted, waiting for opponent", player_index + 1);
+                    cJSON_Delete(json);
+                    free(buf);
+                    return ESP_OK;
+                }
+                
+                if (game.round_over || game.players[player_index].has_won) {
+                    ESP_LOGI(TAG, "Player %d tried to guess but round is over or they won", player_index + 1);
+                    cJSON_Delete(json);
+                    free(buf);
+                    return ESP_OK;
+                }
+                
+                ESP_LOGI(TAG, "Player %d guessed: %s", player_index + 1, guess);
+                
+                game.players[player_index].guesses_used++;
+                game.players[player_index].waiting_for_opponent = true;
+                
+                // Check the guess
                 int result[5];
                 check_guess(guess, game.target_word, result);
                 
-                // Create response JSON
+                bool is_correct = true;
+                for (int i = 0; i < 5; i++) {
+                    if (result[i] != 2) {
+                        is_correct = false;
+                        break;
+                    }
+                }
+                
+                if (is_correct) {
+                    game.players[player_index].has_won = true;
+                    ESP_LOGI(TAG, "Player %d won the round!", player_index + 1);
+                }
+                
+                // Send result to this player
                 cJSON *response = cJSON_CreateObject();
                 cJSON_AddStringToObject(response, "type", "result");
                 cJSON_AddStringToObject(response, "word", guess);
+                cJSON_AddNumberToObject(response, "player", player_index);
                 cJSON *result_array = cJSON_CreateIntArray(result, 5);
                 cJSON_AddItemToObject(response, "result", result_array);
+                cJSON_AddBoolToObject(response, "is_correct", is_correct);
                 
                 char *response_str = cJSON_Print(response);
-                
-                // Broadcast result to all players
-                broadcast_to_all(response_str);
-                
+                send_to_player(player_index, response_str);
                 free(response_str);
                 cJSON_Delete(response);
+                
+                // Notify opponent that this player submitted
+                int opponent_index = (player_index == 0) ? 1 : 0;
+                cJSON *waiting_msg = cJSON_CreateObject();
+                cJSON_AddStringToObject(waiting_msg, "type", "opponent_submitted");
+                cJSON_AddNumberToObject(waiting_msg, "opponent", player_index);
+                char *waiting_str = cJSON_Print(waiting_msg);
+                send_to_player(opponent_index, waiting_str);
+                free(waiting_str);
+                cJSON_Delete(waiting_msg);
+                
+                // Check if both players have submitted
+                bool both_submitted = game.players[0].waiting_for_opponent && 
+                                    game.players[1].waiting_for_opponent;
+                
+                if (both_submitted) {
+                    ESP_LOGI(TAG, "Both players submitted their guesses");
+                    
+                    // Reset waiting flags for next guess
+                    game.players[0].waiting_for_opponent = false;
+                    game.players[1].waiting_for_opponent = false;
+                    
+                    // Broadcast both results to both players
+                    cJSON *both_results = cJSON_CreateObject();
+                    cJSON_AddStringToObject(both_results, "type", "both_guessed");
+                    char *both_str = cJSON_Print(both_results);
+                    broadcast_to_all(both_str);
+                    free(both_str);
+                    cJSON_Delete(both_results);
+                    
+                    // Check if round should end
+                    if (game.players[0].has_won || game.players[1].has_won) {
+                        end_round();
+                    } else if (game.players[0].guesses_used >= 5 && game.players[1].guesses_used >= 5) {
+                        end_round();
+                    }
+                }
+            }
+        }else if (strcmp(msg_type, "next_round") == 0) {
+            ESP_LOGI(TAG, "Next round requested");
+            
+            if (game.round_over) {
+                start_new_round();
+            } else {
+                ESP_LOGE(TAG, "Cannot start next round - current round not over");
+            }
+        }
+        else if (strcmp(msg_type, "join") == 0) {
+            // Get player name
+            cJSON *name_item = cJSON_GetObjectItem(json, "name");
+            if (name_item != NULL && cJSON_IsString(name_item)) {
+                const char *name = name_item->valuestring;
+                
+                // Find which player this is
+                int fd = httpd_req_to_sockfd(req);
+                int player_index = -1;
+                for (int i = 0; i < 2; i++) {
+                    if (game.players[i].connected && game.players[i].fd == fd) {
+                        player_index = i;
+                        strncpy(game.players[i].name, name, 31);
+                        game.players[i].name[31] = '\0';
+                        ESP_LOGI(TAG, "Player %d (%s) joined the lobby", i + 1, name);
+                        break;
+                    }
+                }
+                
+                if (player_index == -1) {
+                    ESP_LOGE(TAG, "Could not find player");
+                    cJSON_Delete(json);
+                    free(buf);
+                    return ESP_ERR_INVALID_ARG;
+                }
+                
+                // Send lobby update to all players
+                cJSON *lobby_msg = cJSON_CreateObject();
+                cJSON_AddStringToObject(lobby_msg, "type", "lobby_update");
+                cJSON_AddNumberToObject(lobby_msg, "player_count", game.player_count);
+                char *lobby_str = cJSON_Print(lobby_msg);
+                broadcast_to_all(lobby_str);
+                free(lobby_str);
+                cJSON_Delete(lobby_msg);
+                
+                // Check if both players have names (both clicked join)
+                bool both_ready = (strlen(game.players[0].name) > 0 && 
+                                strlen(game.players[1].name) > 0 &&
+                                game.players[0].connected && 
+                                game.players[1].connected);
+                
+                if (both_ready && game.player_count == 2) {
+                    ESP_LOGI(TAG, "Both players ready! Starting game...");
+                    
+                    // Send game_starting message
+                    cJSON *start_msg = cJSON_CreateObject();
+                    cJSON_AddStringToObject(start_msg, "type", "game_starting");
+                    char *start_str = cJSON_Print(start_msg);
+                    broadcast_to_all(start_str);
+                    free(start_str);
+                    cJSON_Delete(start_msg);
+                    
+                    game.game_active = true;
+                    
+                    // Start first round after a short delay
+                    vTaskDelay(1000 / portTICK_PERIOD_MS);
+                    start_new_round();
+                }
             }
         }
 
@@ -465,4 +784,7 @@ void app_main(void)
     // Start web server
     start_webserver();
     ESP_LOGI(TAG, "Server ready! Connect to WiFi and visit http://192.168.4.1");
+
+    // Start timer check task
+    // xTaskCreate(timer_check_task, "timer_check", 2048, NULL, 5, NULL);
 }
