@@ -260,6 +260,16 @@ static void start_new_round(void)
     strcpy(game.target_word, WORD_LIST[random_index]);
     
     ESP_LOGI(TAG, "Round %d started! Target word: %s", game.round_number, game.target_word);
+
+     // Calculate hints based on CURRENT scores and NEW word
+    int score_diff = abs(game.players[0].score - game.players[1].score);
+    int losing_player = -1;
+    
+    if (game.players[0].score < game.players[1].score) {
+        losing_player = 0;
+    } else if (game.players[1].score < game.players[0].score) {
+        losing_player = 1;
+    }
     
     // Send round start message to both players
     cJSON *msg = cJSON_CreateObject();
@@ -267,6 +277,26 @@ static void start_new_round(void)
     cJSON_AddNumberToObject(msg, "round", game.round_number);
     cJSON_AddNumberToObject(msg, "time_limit", 45);
     
+     // Add hint for losing player (from NEW word)
+    if (losing_player >= 0 && score_diff >= 2) {
+        int hint_position = rand() % 5;
+        char hint_letter = game.target_word[hint_position];
+        
+        cJSON_AddNumberToObject(msg, "hint_player", losing_player);
+        cJSON_AddNumberToObject(msg, "hint_position", hint_position);
+        cJSON_AddStringToObject(msg, "hint_letter", (char[]){hint_letter, '\0'});
+        
+        if (score_diff >= 4) {
+            cJSON_AddStringToObject(msg, "hint_type", "green");
+        } else {
+            cJSON_AddStringToObject(msg, "hint_type", "yellow");
+        }
+        
+        ESP_LOGI(TAG, "Giving hint to player %d for new word '%s': letter '%c' at position %d (%s)", 
+                 losing_player + 1, game.target_word, hint_letter, hint_position, 
+                 (score_diff >= 4) ? "green" : "yellow");
+    }
+
     char *msg_str = cJSON_Print(msg);
     broadcast_to_all(msg_str);
     
@@ -316,28 +346,24 @@ static void end_round(void)
     cJSON_AddStringToObject(msg, "target_word", game.target_word);
     cJSON_AddNumberToObject(msg, "player1_score", game.players[0].score);
     cJSON_AddNumberToObject(msg, "player2_score", game.players[1].score);
-    
+
     char *msg_str = cJSON_Print(msg);
     broadcast_to_all(msg_str);
-    
     free(msg_str);
     cJSON_Delete(msg);
-    
-    ESP_LOGI(TAG, "Scores - Player 1: %d, Player 2: %d", 
-             game.players[0].score, game.players[1].score);
 }
 
 
 // Check if 45 seconds have passed since round start
-static bool is_time_up(void)
-{
-    if (!game.game_active || game.round_over) return false;
+// static bool is_time_up(void)
+// {
+//     if (!game.game_active || game.round_over) return false;
     
-    time_t current_time = time(NULL);
-    double elapsed = difftime(current_time, game.round_start_time);
+//     time_t current_time = time(NULL);
+//     double elapsed = difftime(current_time, game.round_start_time);
     
-    return elapsed >= 45.0;
-}
+//     return elapsed >= 45.0;
+// }
 
 // Task that checks if round time has expired
 // static void timer_check_task(void *pvParameters)

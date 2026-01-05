@@ -47,20 +47,31 @@ ws.onmessage = function(event) {
             setTimeout(startGame, 800);
         }
         else if (data.type === 'round_start') {
-            console.log('Round', data.round, 'starting!');
-            roundNumber = data.round;
-            roundActive = true;
-            gameOver = false;
-            waitingForOpponent = false;
-            opponentWaiting = false;
+          console.log('Round', data.round, 'starting!');
+          roundNumber = data.round;
+          roundActive = true;
+          gameOver = false;
+          waitingForOpponent = false;
+          opponentWaiting = false;
 
-            resetBoardState();
-            renderBoard();
-            // startTimer();
+          // Check if we got a hint for THIS round
+          if (data.hint_player !== undefined && data.hint_player === playerIndex) {
+              currentHint = {
+                  type: data.hint_type,
+                  letter: data.hint_letter,
+                  position: data.hint_position
+              };
+              console.log('Received hint:', currentHint);
+          } else {
+              currentHint = null;
+          }
 
-            // statusEl.innerText = `Round ${roundNumber} - Guess 1/5 - Time: 45s`;
-            statusEl.innerText = `Round ${roundNumber} - Guess 1/5`;
-            inputEl.focus();
+          resetBoardState();
+          renderBoard();
+          updateScoreDisplay();
+
+          statusEl.innerText = `Round ${roundNumber} - Guess 1/5${getHintText()}`;
+          inputEl.focus();
         }
         else if (data.type === 'result') {
             // CHANGE 3 & 4: Consolidated duplicate result logic and fixed indentation
@@ -95,41 +106,42 @@ ws.onmessage = function(event) {
                 // Opponent's guess
                 if (data.is_correct) {
                     // statusEl.innerText = `Opponent guessed it! You have ${timeRemaining}s left`;
-                    statusEl.innerText = `Opponent guessed it!`;
+                    statusEl.innerText = `Waiting for opponent to guess...${getHintText()}`;
                 }
             }
         }
         else if (data.type === 'round_end') {
-            console.log('Round ended. Winner:', data.winner);
-            roundActive = false;
-            gameOver = true;
-            // stopTimer();
+          console.log('Round ended. Winner:', data.winner);
+          roundActive = false;
+          gameOver = true;
 
-            myScore = data.player1_score;
-            opponentScore = data.player2_score;
+          myScore = data.player1_score;
+          opponentScore = data.player2_score;
+          updateScoreDisplay();
 
-            let resultMsg = "";
-            if (data.winner === -1) {
-                resultMsg = "Tie!";
-            } else if (data.winner === playerIndex) {
-                resultMsg = "You won this round!";
-            } else {
-                resultMsg = "Opponent won this round!";
-            }
+          let resultMsg = "";
+          if (data.winner === -1) {
+              resultMsg = "Tie!";
+          } else if (data.winner === playerIndex) {
+              resultMsg = "You won this round!";
+          } else {
+              resultMsg = "Opponent won this round!";
+          }
 
-            resultMsg += ` | Score: You ${myScore} - ${opponentScore} Opponent`;
-            resultMsg += ` | Word was: ${data.target_word}`;
-            statusEl.innerText = resultMsg;
+          resultMsg += ` | Score: You ${myScore} - ${opponentScore} Opponent`;
+          resultMsg += ` | Word was: ${data.target_word}`;
+          
+          statusEl.innerText = resultMsg;
 
-            restartBtn.innerText = "Next Round";
-            restartBtn.style.display = "inline-block";
-        }
+          restartBtn.innerText = "Next Round";
+          restartBtn.style.display = "inline-block";
+      }
         else if (data.type === 'opponent_submitted') {
             console.log('Opponent submitted');
             opponentWaiting = true;
             if (!waitingForOpponent && !gameOver) {
                 // statusEl.innerText = `Opponent submitted! Your turn - Time: ${timeRemaining}s`;
-                statusEl.innerText = `Opponent submitted! Your turn`;
+                statusEl.innerText = `Opponent submitted! Your turn${getHintText()}`;
             }
         }
         else if (data.type === 'both_guessed') {
@@ -145,7 +157,8 @@ ws.onmessage = function(event) {
                 } else {
                     // startTimer();
                     // statusEl.innerText = `Guess ${currentRow + 1}/5 - Time: 45s`;
-                    statusEl.innerText = `Guess ${currentRow + 1}/5`;
+                    updateScoreDisplay();
+                    statusEl.innerText = `Guess ${currentRow + 1}/5${getHintText()}`;
                     inputEl.focus();
                 }
             }
@@ -197,6 +210,7 @@ let opponentScore = 0;
 let roundNumber = 0;
 let waitingForOpponent = false;
 let opponentWaiting = false;
+let currentHint = null;
 
 
 
@@ -367,16 +381,16 @@ function evaluateGuess(guess, secret) {
 
 function submitGuess(){
     if (gameOver || waitingForOpponent) {
-        statusEl.innerText = waitingForOpponent ? "Already submitted, wait for opponent" : "Round over";
+        statusEl.innerText = (waitingForOpponent ? "Already submitted, wait for opponent" : "Round over") + getHintText();
         return;
     }
     const guess = inputEl.value.trim().toUpperCase();
     if (guess.length !== 5) {
-        statusEl.innerText = "Guess must be 5 letters.";
+        statusEl.innerText = `Guess must be 5 letters.${getHintText()}`;
         return;
     }
     sendGuess(guess);
-    statusEl.innerText = "Submitting guess...";
+    statusEl.innerText = `Submitting guess...${getHintText()}`;
     inputEl.value = "";
 }
 
@@ -401,6 +415,38 @@ function restart() {
     const message = { type: 'next_round' };
     ws.send(JSON.stringify(message));
     restartBtn.style.display = "none";
+}
+
+function getHintText() {
+    if (!currentHint) return "";
+    
+    if (currentHint.type === "green") {
+        return ` | Hint: Position ${currentHint.position + 1} is "${currentHint.letter}"`;
+    } else {
+        return ` | Hint: Word contains "${currentHint.letter}"`;
+    }
+}
+
+function updateScoreDisplay() {
+    // Find or create score display
+    let scoreDisplay = document.getElementById('scoreDisplay');
+    if (!scoreDisplay) {
+        scoreDisplay = document.createElement('div');
+        scoreDisplay.id = 'scoreDisplay';
+        scoreDisplay.style.cssText = `
+            background: #f0f0f0;
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            font-weight: bold;
+            color: #333;
+        `;
+        // Insert before the board
+        const board = document.getElementById('board');
+        board.parentNode.insertBefore(scoreDisplay, board);
+    }
+    
+    scoreDisplay.innerText = `Score: You ${myScore} - ${opponentScore} Opponent`;
 }
 
 // Initial render

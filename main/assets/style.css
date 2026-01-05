@@ -1,31 +1,303 @@
-/* Board stacks rows vertically */
+/* =======Center====== */
+#namePage, #lobbyPage, #gamePage {
+  background: white;
+  padding: 40px;
+  border-radius: 10px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+  max-width: 500px;
+  width: 100%;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* Make sure inputs and buttons align */
+input[type="text"], #guessInput, button {
+  max-width: 100%;
+}
+
+/* Center the board */
 #board {
   display: flex;
   flex-direction: column;
   gap: 5px;
-  margin: 20px 0;
+  margin: 20px auto;
+  align-items: center;
+}
+
+/* ========== Global Styles ========== */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  background: #f5f5f5;
+  font-family: Arial, sans-serif;
+  padding: 20px;
+}
+
+/* ========== Page Headers ========== */
+#namePage h1, #lobbyPage h1, #gamePage h1 {
+  text-align: center;
+  margin: 0 0 20px 0;
+}
+
+h1 {
+  margin-bottom: 20px;
+  color: #333;
+}
+
+/* ========== Typography ========== */
+h1, h2 {
+  margin-bottom: 20px;
+  color: #333;
+}
+
+p {
+  margin-bottom: 15px;
+  color: #666;
+}
+
+/* ========== Game Title ========== */
+.game-title {
+    position: absolute;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: #6aaa64;
+    font-size: 2rem;
+    font-weight: bold;
+    margin: 0;
+    text-align: center;
+    z-index: 10;
+}
+
+
+/* ========== Form Elements ========== */
+input[type="text"] {
+  width: 100%;
+  padding: 12px;
+  margin-bottom: 15px;
+  font-size: 16px;
+  border: 2px solid #ccc;
+  border-radius: 5px;
+  outline: none;
+}
+
+input[type="text"]:focus {
+  border-color: #6aaa64;
+}
+
+button {
+  width: 100%;
+  padding: 12px;
+  margin: 10px 0;
+  font-size: 16px;
+  font-weight: bold;
+  border: none;
+  border-radius: 5px;
+  background: #6aaa64;
+  color: white;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+button:hover:not(:disabled) {
+  background: #5a9a54;
+}
+
+button:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+/* ========== Status Messages ========== */
+#gameStatus, #lobbyStatus {
+  background: #f0f0f0;
+  padding: 15px;
+  border-radius: 5px;
+  margin-bottom: 20px;
+  font-weight: bold;
+  color: #333;
+}
+
+/* ========== Wordle Board ========== */
+#board {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 20px auto;
+  width: fit-content;
 }
 
 /* Each row lays tiles LEFT → RIGHT */
 .row {
   display: grid;
-  grid-template-columns: repeat(5, 50px);
+  grid-template-columns: repeat(5, 60px);
   gap: 5px;
+  justify-content: center;
 }
 
 /* Tile styling */
 .tile {
-  width: 50px;
-  height: 50px;
+  width: 60px;
+  height: 60px;
   border: 2px solid #ccc;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 24px;
   font-weight: bold;
+  text-transform: uppercase;
+  background: white;
+}
+
+.tile:not(:empty) {
+  border-color: #999;
 }
 
 /* Wordle colors */
-.correct { background: #6aaa64; color: white; }
-.present { background: #c9b458; color: white; }
-.absent  { background: #787c7e; color: white; }
+.correct { 
+  background: #6aaa64; 
+  color: white; 
+  border-color: #6aaa64;
+}
+
+.present { 
+  background: #c9b458; 
+  color: white; 
+  border-color: #c9b458;
+}
+
+.absent { 
+  background: #787c7e; 
+  color: white; 
+  border-color: #787c7e;
+}
+
+/* ========== Guess Input ========== */
+#guessInput {
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 5px;
+  font-size: 20px;
+  font-weight: bold;
+}
+
+/* ========== Restart Button ========== */
+#restartBtn {
+  margin-top: 20px;
+}
+
+/* ========== Responsive Design ========== */
+
+/* Tablets (Portrait) */
+@media (max-width: 768px) {
+  #namePage, #lobbyPage, #gamePage {
+    padding: 30px 20px;
+    max-width: 450px;
+  }
+  
+  .row {
+    grid-template-columns: repeat(5, 55px);
+  }
+  
+  .tile {
+    width: 55px;
+    height: 55px;
+    font-size: 22px;
+  }
+}
+
+/* Phones */
+@media (max-width: 480px) {
+  body {
+    padding: 10px;
+  }
+  
+  #namePage, #lobbyPage, #gamePage {
+    padding: 25px 15px;
+    max-width: 100%;
+  }
+  
+  h1 {
+    font-size: 24px;
+  }
+  
+  h2 {
+    font-size: 20px;
+  }
+  
+  .row {
+    grid-template-columns: repeat(5, 50px);
+    gap: 4px;
+  }
+  
+  .tile {
+    width: 50px;
+    height: 50px;
+    font-size: 20px;
+    border-width: 1.5px;
+  }
+  
+  #board {
+    gap: 4px;
+  }
+  
+  button {
+    padding: 10px;
+    font-size: 15px;
+  }
+  
+  input[type="text"], #guessInput {
+    font-size: 15px;
+    padding: 10px;
+  }
+  
+  #guessInput {
+    letter-spacing: 3px;
+  }
+}
+
+/* Large Screens */
+@media (min-width: 1024px) {
+  #namePage, #lobbyPage, #gamePage {
+    max-width: 550px;
+    padding: 50px;
+  }
+  
+  .row {
+    grid-template-columns: repeat(5, 65px);
+  }
+  
+  .tile {
+    width: 65px;
+    height: 65px;
+    font-size: 26px;
+  }
+}
+
+/* Very Small Phones */
+@media (max-width: 360px) {
+  .row {
+    grid-template-columns: repeat(5, 45px);
+    gap: 3px;
+  }
+  
+  .tile {
+    width: 45px;
+    height: 45px;
+    font-size: 18px;
+  }
+  
+  #board {
+    gap: 3px;
+  }
+}
